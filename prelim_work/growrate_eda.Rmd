@@ -1,0 +1,348 @@
+---
+title: "Lineage Growth Rate EDA"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(covidData)
+library(MMWRweek)
+library(lubridate)
+library(gridExtra)
+library(grid)
+library(cowplot)
+knitr::opts_chunk$set(echo = FALSE,warning = FALSE,message = FALSE,cache=FALSE)
+```
+
+## SARS-CoV-2 Lineages and Clades
+
+```{r data, message=FALSE}
+variant_dat <- readr::read_csv("./data/genomic_data_cached_2023-02-15.csv")
+n_lineages <- n_distinct(variant_dat$pango_lineage)
+n_clades <- n_distinct(variant_dat$Nextstrain_clade)
+```
+
+The first date of the MA genomic data is 2020-01-29 and the last date is 2023-01-31. The number of unique SAR-CoV-2 lineages during this period is 693. If we look at (Nextstrain) clades instead, there are 31 clades.
+
+## Reporting lags
+
+Each sequenced sample has a date the sample was taken and the date the sample was submitted. The reporting lag for each sample is the time elapsed between those two dates. Our training period starts at the beginning of March 2021, in which the median lags seem reasonable.
+
+```{r lag, echo=FALSE}
+variant_dat <- variant_dat %>%
+  mutate(epiweek_year = paste(year, formatC(epiweek, width=2, flag="0"), sep="_"),
+         month_year=paste(year,month(date),sep="-")) 
+variant_dat %>%
+  ggplot() +
+  geom_boxplot(aes(x=cut(date, breaks="month"),y=reporting_lag),
+               outlier.size = 0.1) +
+  scale_x_discrete(breaks=levels(cut(variant_dat$date, breaks="quarter")),
+                   labels = format(as.Date(levels(cut(variant_dat$date, breaks="quarter"))),"%b-%y")) +
+  ylab("Monthly Reporting Lags") +
+  xlab("Date")+
+  theme_bw()
+```
+
+\newpage 
+
+## Number of lineages
+
+There are 693 unique lineages in the data, below are the monthly boxplot number of unique lineages on a given date. There were a large number of lineages circulating in the later half of 2021. 
+
+```{r lineage, echo=FALSE}
+variant_dat %>%
+  # dplyr::filter(lineage_pct >= 0.01) %>%
+  dplyr::group_by(date) %>%
+  dplyr::summarize(num_lineages=n_distinct(pango_lineage)) %>%
+  ungroup() %>%
+  ggplot() +
+  geom_boxplot(aes(x=cut(date, breaks="month"),y=num_lineages),
+               outlier.size = 0.1) +
+  scale_x_discrete(breaks=levels(cut(variant_dat$date, breaks="quarter")),
+                   labels = format(as.Date(levels(cut(variant_dat$date, breaks="quarter"))),"%b-%y")) +
+  ylab("Number of Lineages") +
+  xlab("Date")+
+  theme_bw()
+```
+
+\newpage 
+
+## Lineage/Clade Proportions
+
+Here we filtered the data to only include 5 lineages with the highest proportions in the samples taken on a given day for readability. We also truncated the dates to the period between March 2021 to Jan 2023.I decided to take out the legends since there are 315 unique lineages, the legends and the plot are still not very readable.
+
+```{r prop, echo=FALSE}
+trunc_variant_dat <- variant_dat %>%
+  dplyr::filter(date >= "2021-03-01") %>%
+  select(-reporting_lag) %>%
+  distinct() %>%
+  dplyr::group_by(date) %>%
+  slice_max(lineage_pct,n=5) %>%
+  ungroup() 
+
+prop <- trunc_variant_dat %>%
+  ggplot(aes(x=date,y=lineage_pct,color=pango_lineage)) +
+  geom_point(alpha=0.5) +
+  scale_x_date(breaks="3 months",
+               date_labels = "%b-%y") +
+  ylab("Proportions") +
+  xlab("Date")+
+  guides(color = guide_legend(ncol = 8))+
+  theme_bw() +
+  theme(legend.position = "bottom",
+        legend.text  = element_text(size = 6),
+        legend.title = element_blank())
+trunc_variant_dat %>%
+  ggplot(aes(x=date,y=lineage_pct,color=pango_lineage)) +
+  #geom_line(show.legend = FALSE,alpha=0.5) +
+  geom_point(show.legend = FALSE,alpha=0.5) +
+  scale_x_date(breaks="3 months",
+               date_labels = "%b-%y") +
+  ylab("Proportions") +
+  xlab("Date")+
+  theme_bw()
+grid.newpage()
+grid.draw(cowplot::get_legend(prop))
+```
+
+Due to a lot of variability in the unique lineages being sampled daily, we need another way to make the plot more readable. We will only include 5 lineages with the highest proportions in the samples taken on a given epiweek (instead of day), so we can exclude lineages that are not consistently detected. With this, there are 88 unique lineages below
+
+
+```{r prop2, echo=FALSE}
+trunc_variant_dat2 <- variant_dat %>%
+  dplyr::filter(date >= "2021-03-01") %>%
+  select(-reporting_lag) %>%
+  distinct() %>%
+  # make weekly prop
+  dplyr::group_by(epiweek_year) %>%
+  dplyr::mutate(wk_total_samples=sum(total_samples)) %>%
+  ungroup() %>%
+  dplyr::group_by(epiweek_year,pango_lineage) %>%
+  dplyr::mutate(wk_lineage_samples=sum(lineage_samples)) %>%
+  ungroup() %>%
+  dplyr::mutate(wk_prop=wk_lineage_samples/wk_total_samples) %>%
+  # keep top 5
+  dplyr::group_by(epiweek_year) %>%
+  mutate(prop_rank= dense_rank(-wk_prop)) %>%
+  dplyr::filter(prop_rank %in% c(1:5)) %>%
+  ungroup() 
+
+trunc_variant_dat2 %>%
+  ggplot(aes(x=date,y=lineage_pct,color=pango_lineage)) +
+  geom_point(show.legend = FALSE,alpha=0.5) +
+  scale_x_date(breaks="3 months",
+               date_labels = "%b-%y") +
+  ylab("Proportions") +
+  xlab("Date")+
+  theme_bw()
+
+trunc2 <- trunc_variant_dat2 %>%
+  ggplot(aes(x=date,y=lineage_pct,color=pango_lineage)) +
+  geom_point(alpha=0.5) +
+  scale_x_date(breaks="3 months",
+               date_labels = "%b-%y") +
+  ylab("Proportions") +
+  xlab("Date")+
+  guides(color = guide_legend(ncol = 8))+
+  theme_bw()+
+  theme(legend.position = "bottom",
+        legend.text  = element_text(size = 6),
+        legend.title = element_blank())
+grid.newpage()
+grid.draw(cowplot::get_legend(trunc2))
+```
+
+<!-- For modeling, the hospitalization data is daily, so we will go with top $n$ lineages on a given day. -->
+
+\newpage 
+
+```{r clade, echo=FALSE}
+variant_dat %>%
+  dplyr::filter(date >= "2021-03-01") %>%
+  select(date,clade_pct,Nextstrain_clade) %>%
+  distinct() %>%
+  ggplot(aes(x=date,y=clade_pct,color=Nextstrain_clade)) +
+  geom_point(alpha=0.5) +
+  scale_x_date(breaks="3 months",
+               date_labels = "%b-%y") +
+  ylab("Clade Proportions") +
+  xlab("Date")+
+  guides(color = guide_legend(ncol = 8))+
+  theme_bw() +
+  theme(legend.position = "bottom",
+        legend.text  = element_text(size = 6),
+        legend.title = element_blank())
+```
+
+## Sampling rates
+
+We divided the total number of samples taken on a given day by the population of MA, which is a constant number of about 68 (multiplied by 100K). Again we will focus on the period starting March 2021 and after. The rates were fairly low from the later part of 2022 onward. The sampling rates will be used as a feature and probably can use some smoothing (smooth line in the figure generated from a cubic spline). 
+
+```{r samp, echo=FALSE}
+variant_dat %>%
+  select(date,sampling_rate) %>%
+  distinct() %>%
+  ggplot(aes(x=date,y=sampling_rate)) +
+  geom_line() +
+  geom_smooth(method="gam") +
+  scale_x_date(breaks="3 months",
+               date_labels = "%b-%y") +
+  ylab("Daily Sampling Rate (Per 100K Population)") +
+  xlab("Date")+
+  theme_bw()
+```
+
+\newpage 
+
+## Lineage Growth Rates
+
+By now I realized that the daily sampling rates fluctuate so much that the lineages detected varied greatly day to day. I decided to look at the daily growth rates of 5 lineages with the highest proportions in a given week (there are 88 unique lineages during this period), so we have relatively stable sets of lineages. Well, it's still not readable.
+
+```{r growth, echo=FALSE}
+small_vardat <- trunc_variant_dat2 %>%
+  dplyr::filter(date >= "2021-02-28") %>%
+  distinct() %>%
+  dplyr::group_by(pango_lineage) %>%
+  dplyr::arrange(date, .by_group = TRUE) %>%
+  dplyr::mutate(delta_t=as.numeric(difftime(date,lag(date,order_by = pango_lineage))),
+                delta_x=lineage_pct - lag(lineage_pct,order_by = pango_lineage),
+                growth_rate= (delta_x/lag(lineage_pct,order_by = pango_lineage))*(1/delta_t)) %>%
+  dplyr::ungroup() %>%
+  dplyr::arrange(date) %>%
+  # add average growth rates of x' variants
+  dplyr::group_by(date) %>%
+  dplyr::mutate(nonvar_growth_rate = (sum(growth_rate, na.rm = TRUE)-growth_rate)/(n()-1)) %>%
+  dplyr::ungroup() 
+
+small_vardat %>%
+  ggplot(aes(x=date,y=growth_rate,color=pango_lineage)) +
+  geom_point(show.legend=FALSE,alpha=0.5) +
+  scale_x_date(breaks="3 months",
+               date_labels = "%b-%y") +
+  ylab("Daily Growth Rate") +
+  xlab("Date")+
+  theme_bw()
+smv2 <- small_vardat %>%
+  ggplot(aes(x=date,y=growth_rate,color=pango_lineage)) +
+  geom_point(alpha=0.5) +
+  scale_x_date(breaks="3 months",
+               date_labels = "%b-%y") +
+  ylab("Daily Growth Rate") +
+  xlab("Date")+
+  guides(color = guide_legend(ncol = 8))+
+  theme_bw()+ 
+  theme(legend.position = "bottom",
+        legend.text  = element_text(size = 6),
+        legend.title = element_blank())
+grid.newpage()
+grid.draw(cowplot::get_legend(smv2))
+```
+
+And I did the same but with 5 lineages with highest average daily growth rates in a given week. There are 209 unique lineages, too many to be readable on the plot below. 
+
+
+```{r growth1, echo=FALSE}
+trunc_variant_dat3 <- variant_dat %>%
+  select(-reporting_lag) %>%
+  distinct() %>%
+  # no change
+  dplyr::filter(date >= "2021-02-28") %>%
+  distinct() %>%
+  dplyr::group_by(pango_lineage) %>%
+  dplyr::arrange(date, .by_group = TRUE) %>%
+  dplyr::mutate(delta_t=as.numeric(difftime(date,lag(date,order_by = pango_lineage))),
+                delta_x=lineage_pct - lag(lineage_pct,order_by = pango_lineage),
+                growth_rate= (delta_x/lag(lineage_pct,order_by = pango_lineage))*(1/delta_t)) %>%
+  dplyr::ungroup() %>%
+  dplyr::arrange(date) %>%
+  # add average growth rates of x' variants
+  dplyr::group_by(date) %>%
+  dplyr::mutate(nonvar_growth_rate = (sum(growth_rate, na.rm = TRUE)-growth_rate)/(n()-1)) %>%
+  dplyr::ungroup() %>%
+  # make weekly growth rate
+  dplyr::group_by(epiweek_year,pango_lineage) %>%
+  dplyr::mutate(avg_growth_rate=mean(growth_rate, na.rm = TRUE)) %>%
+  ungroup() %>%
+  dplyr::filter(date >= "2021-03-01") %>%
+  # keep top 5
+  dplyr::group_by(epiweek_year) %>%
+  mutate(growth_rank= dense_rank(-avg_growth_rate))%>%
+  dplyr::filter(growth_rank %in% c(1:5)) %>%
+  ungroup() 
+
+trunc_variant_dat3 %>%
+  ggplot(aes(x=date,y=growth_rate,color=pango_lineage)) +
+  geom_point(show.legend = FALSE,alpha=0.5) +
+  scale_x_date(breaks="3 months",
+               date_labels = "%b-%y") +
+  ylab("Daily Growth Rate") +
+  xlab("Date")+
+  theme_bw()
+
+smv3 <- trunc_variant_dat3 %>%
+  ggplot(aes(x=date,y=growth_rate,color=pango_lineage)) +
+  geom_point(alpha=0.5) +
+  scale_x_date(breaks="3 months",
+               date_labels = "%b-%y") +
+  ylab("Daily Growth Rate") +
+  xlab("Date")+
+  guides(color = guide_legend(ncol = 8))+
+  theme_bw()+
+  theme(legend.position = "bottom",
+        legend.text  = element_text(size = 6),
+        legend.title = element_blank())
+grid.newpage()
+grid.draw(cowplot::get_legend(smv3))
+```
+
+## Clade Growth Rates
+
+```{r cgrowth, echo=FALSE}
+variant_dat %>%
+  dplyr::filter(date >= "2021-02-28") %>%
+  select(date,clade_samples,Nextstrain_clade) %>%
+  distinct() %>%
+  dplyr::group_by(Nextstrain_clade) %>%
+  dplyr::arrange(date, .by_group = TRUE) %>%
+  dplyr::mutate(delta_t=as.numeric(difftime(date,lag(date))),
+                delta_x=clade_samples - lag(clade_samples),
+                growth_rate= (delta_x/lag(clade_samples))*(1/delta_t)) %>%
+  dplyr::ungroup() %>%
+  dplyr::arrange(date) %>%
+  # add average growth rates of x' variants
+  dplyr::group_by(date) %>%
+  dplyr::mutate(nonvar_growth_rate = (sum(growth_rate, na.rm = TRUE)-growth_rate)/(n()-1)) %>%
+  dplyr::ungroup() %>%
+  ggplot(aes(x=date,y=growth_rate,color=Nextstrain_clade)) +
+  geom_point(alpha=0.5) +
+  scale_x_date(breaks="3 months",
+               date_labels = "%b-%y") +
+  ylab("Daily Growth Rate -Clade") +
+  xlab("Date")+
+  theme_bw()+ 
+  theme(legend.position = "bottom")
+```
+
+```{r cgrowth1, echo=FALSE}
+variant_dat %>%
+  dplyr::filter(date >= "2021-02-28") %>%
+  select(date,clade_samples,Nextstrain_clade) %>%
+  distinct() %>%
+  dplyr::group_by(Nextstrain_clade) %>%
+  dplyr::arrange(date, .by_group = TRUE) %>%
+  dplyr::mutate(diff_log=log(clade_samples)-log(lag(clade_samples))) %>%
+  dplyr::ungroup() %>%
+  dplyr::arrange(date) %>%
+  # add average diff log
+  dplyr::group_by(date) %>%
+  dplyr::mutate(nonvar_diff_log = (sum(diff_log, na.rm = TRUE)-diff_log)/(n()-1)) %>%
+  dplyr::ungroup() %>%
+  ggplot(aes(x=date,y=diff_log,color=Nextstrain_clade)) +
+  geom_point(show.legend=FALSE,alpha=0.5) +
+  geom_line(show.legend=FALSE,alpha=0.5)+
+  scale_x_date(breaks="3 months",
+               date_labels = "%b-%y") +
+  ylab("Log difference -Clade") +
+  xlab("Date")+
+  theme_bw()
+```
